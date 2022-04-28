@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html>
+  <head></head>
+
+  <body>
+    <p>
+      WebSocket受信　行数：<label id="text_count">0</label>　状態：<label id="ws_status">OFF</label
+      >　WSモード：<label id="ws_mode">開発</label>
+    </p>
+    <textarea id="output" style="min-width: 100%; min-height: 60vh" wrap="off" readonly></textarea>
+    <button onclick="clearTextRcv()">クリア</button>
+    <button onclick="copyToClipboard()">コピー</button>
+    <button onclick="saveFile()">保存</button>
+    <p>WebSocket送信</p>
+    <textarea id="input" style="min-width: 100%; min-height: 1em"></textarea>
+    <button onclick="sendText()">送信</button>
+    <input type="file" id="upload_file" name="upload_file" /><br />
+    <input type="checkbox" id="mode" name="mode" checked />
+    <label for="mode">New WS</label>
+    <input type="checkbox" id="filter" name="filter" onchange="handleCheckBoxChanged('filter')" />
+    <label for="filter">filter</label>
+    <button onclick="handleStopped()">停止</button>
+
+    <script type="text/javascript">
+      /** 連続送信の際のカウントアップ数(ミリ秒) */
+      const COUNT_UP_MS = 100
+      /** 全WebSocket受信データ */
+      const wsReceived = []
+      /** 四角形WebSocket受信データ */
+      const wsRectangle = []
+      /** 一時停止か否か */
+      let isStopped = false
+      /** BoolStore */
+      const boolValues = new Map([
+        ['filter', false], // フィルター
+      ])
+
+      /**
+       * テキストを設定
+       *
+       * @param {string} key キー
+       * @param {string} value 値
+       */
+      const setText = (key, value) => {
+        document.getElementById(key).innerText = value
+      }
+
+      /** 新WebSocketモードか否か */
+      const isNewWsMode = () => document.getElementById('mode').checked
+
+      /**
+       * 日付をフォーマット
+       *
+       * @param {date} date 時刻
+       * @param {string} formatIn フォーマット
+       * @returns {string} フォーマット後時刻
+       */
+      const formatDate = (date, formatIn) => {
+        let format = formatIn
+        format = format.replace(/yyyy/g, date.getFullYear())
+        format = format.replace(/MM/g, `0${date.getMonth() + 1}`.slice(-2))
+        format = format.replace(/dd/g, `0${date.getDate()}`.slice(-2))
+        format = format.replace(/HH/g, `0${date.getHours()}`.slice(-2))
+        format = format.replace(/mm/g, `0${date.getMinutes()}`.slice(-2))
+        format = format.replace(/ss/g, `0${date.getSeconds()}`.slice(-2))
+        format = format.replace(/SSS/g, `00${date.getMilliseconds()}`.slice(-3))
+        return format
+      }
+
+      /** ファイルに保存 */
+      const saveFile = () => {
+        if (wsReceived.length < 1) {
+          alert('保存するデータがありません')
+          return
+        }
+        const msg = wsReceived.join('\n')
+        const blob = new Blob([msg], { type: 'text/plain' })
+        const link = document.createElement('a')
+        link.href = URL.createObjectURL(blob)
+        link.download = `ws-log_${formatDate(new Date(), 'yyyyMMddHHmmss')}.log`
+        link.click()
+      }
+
+      /**
+       * クリア
+       */
+      const clearTextRcv = () => {
+        const textElem = document.querySelector('#output')
+        textElem.innerHTML = ''
+        if (window.confirm('ファイルを保存しますか？')) saveFile()
+        wsReceived.splice(0)
+        wsRectangle.splice(0)
+      }
+
+      /**
+       * クリップボードにコピー
+       */
+      const copyToClipboard = () => {
+        // コピー対象をJavaScript上で変数として定義する
+        const copyTarget = document.getElementById('output')
+        // コピー対象のテキストを選択する
+        copyTarget.select()
+        // 選択しているテキストをクリップボードにコピーする
+        document.execCommand('copy')
+      }
+
+      /**
+       * テキスト取得
+       */
+      const getText = () => document.getElementById('input').value
+
+      /**
+       * データ送信
+       */
+      const sendData = (dataRaw) => {
+        let data = dataRaw
+        if (isNewWsMode()) data = { data: [data] }
+        this.connection.send(JSON.stringify(data))
+      }
+
+      /**
+       * テキスト通常送信
+       */
+      const sendText = () => {
+        const msg = getText()
+        let text = ''
+        try {
+          text = JSON.parse(msg)
+        } catch (e) {
+          text = msg
+        }
+
+        sendData(text)
+        document.getElementById('input').innerHTML = ''
+      }
+
+      /**
+       * データ表示
+       */
+      const showData = () => {
+        setText('text_count', wsReceived.length)
+        if (isStopped) return
+        const textElem = document.querySelector('#output')
+        if (boolValues.get('filter')) {
+          textElem.innerHTML = wsRectangle.join('\n')
+        } else {
+          textElem.innerHTML = wsReceived.join('\n')
+        }
+      }
+
+      /**
+       * チェックボックス状態変更
+       *
+       * @param {string} key キー
+       */
+      const handleCheckBoxChanged = (key) => {
+        boolValues.set(key, document.getElementById(key).checked)
+        localStorage.setItem(key, boolValues.get(key))
+      }
+
+      /**
+       * 停止ボタンハンドラ
+       */
+      const handleStopped = () => {
+        isStopped = !isStopped
+      }
+
+      /**
+       * ローカルストレージから値を取得
+       */
+      const getLocalStorageData = () => {
+        // フィルター設定
+        const value = localStorage.getItem('filter') === 'true'
+        boolValues.set('filter', value)
+        document.getElementById('filter').checked = value
+      }
+
+      /**
+       * WebSocketメッセージ受信ハンドラ
+       *
+       * @param {string} data 受信データ
+       */
+      const handleReceivedMessage = (receivedData) => {
+        const header = `[${formatDate(new Date(), 'yyyy-MM-dd HH:mm:ss.SSS')}] [D] `
+        try {
+          const checkData = JSON.parse(receivedData)
+          checkData.data.forEach((value, index, array) => {
+            if (checkData.data[index].rectangles) {
+              wsRectangle.push(`${header}${JSON.stringify(checkData.data[index].rectangles)}`)
+            }
+          })
+        } catch {
+          console.error('parse Error')
+        }
+        wsReceived.push(`${header}${receivedData}`)
+        showData()
+      }
+
+      // eslint-disable-next-line no-extra-semi
+      (() => {
+        document.addEventListener('DOMContentLoaded', () => {
+          getLocalStorageData()
+
+          // クエリパラメーター取得
+          const wsMode = true // TODO: プロジェクト毎に設定
+          const url = wsMode
+            ? 'ws://●本番'
+            : 'ws://●テスト'
+          this.connection = new WebSocket(url)
+          if (wsMode) setText('ws_mode', '本番')
+
+          // WebSocket通信が接続された場合
+          this.connection.onopen = () => {
+            setText('ws_status', 'ON')
+          }
+
+          // エラーが発生した場合
+          this.connection.onerror = (error) => {
+            setText('ws_status', 'OFF')
+            alert('websocket error', error)
+          }
+
+          // メッセージを受け取った場合
+          this.connection.onmessage = (e) => {
+            handleReceivedMessage(e.data)
+          }
+
+          // 通信が切断された場合
+          this.connection.onclose = () => {
+            setText('ws_status', 'OFF')
+          }
+        })
+
+        // ファイルが選択されたら実行
+        document.getElementById('upload_file').addEventListener('change', (e) => {
+          const fileReader = new FileReader()
+          // ファイルの読み込みを行ったら実行
+          fileReader.addEventListener('load', (loadEvent) => {
+            document.getElementById('input').value = loadEvent.target.result
+          })
+          fileReader.readAsText(e.target.files[0])
+        })
+      })()
+    </script>
+  </body>
+</html>
